@@ -4,6 +4,7 @@ use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::io::{Error, ErrorKind};
+use std::str::FromStr;
 
 use rand::{Rng, rngs::OsRng};
 
@@ -391,7 +392,7 @@ impl LightWallet {
     }
 
     pub fn note_address(hrp: &str, note: &SaplingNoteData) -> Option<String> {
-        match note.extfvk.fvk.vk.into_payment_address(note.diversifier, &JUBJUB) {
+        match note.extfvk.fvk.vk.to_payment_address(note.diversifier, &JUBJUB) {
             Some(pa) => Some(encode_payment_address(hrp, &pa)),
             None     => None
         }
@@ -773,7 +774,7 @@ impl LightWallet {
                             Some(a) => a == encode_payment_address(
                                                 self.config.hrp_sapling_address(),
                                                 &nd.extfvk.fvk.vk
-                                                    .into_payment_address(nd.diversifier, &JUBJUB).unwrap()
+                                                    .to_payment_address(nd.diversifier, &JUBJUB).unwrap()
                                             ),
                             None    => true
                         }
@@ -827,7 +828,7 @@ impl LightWallet {
                                 Some(a) => a == encode_payment_address(
                                                     self.config.hrp_sapling_address(),
                                                     &nd.extfvk.fvk.vk
-                                                        .into_payment_address(nd.diversifier, &JUBJUB).unwrap()
+                                                        .to_payment_address(nd.diversifier, &JUBJUB).unwrap()
                                                 ),
                                 None    => true
                             }
@@ -1526,7 +1527,7 @@ impl LightWallet {
                 
             })
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("{}", e))?;
+            .map_err(|e| format!("{:?}", e))?;
         
 
         // Confirm we were able to select sufficient value
@@ -1550,7 +1551,7 @@ impl LightWallet {
                 selected.extsk.clone(),
                 selected.diversifier,
                 selected.note.clone(),
-                selected.witness.clone(),
+                selected.witness.path().unwrap().clone(),
             ) {
                 let e = format!("Error adding note: {:?}", e);
                 error!("{}", e);
@@ -1592,9 +1593,12 @@ impl LightWallet {
         
 
         println!("{}: Building transaction", now() - start_time);
+        use zcash_primitives::consensus::BranchId;
+        use std::convert::TryFrom;
+
         let (tx, _) = match builder.build(
-            consensus_branch_id,
-            prover::InMemTxProver::new(spend_params, output_params),
+            BranchId::try_from(consensus_branch_id).unwrap(),
+            &prover::InMemTxProver::new(spend_params, output_params),
         ) {
             Ok(res) => res,
             Err(e) => {

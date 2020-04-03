@@ -128,7 +128,7 @@ impl SaplingNoteData {
         SaplingNoteData {
             account: output.account,
             extfvk: extfvk.clone(),
-            diversifier: output.to.diversifier,
+            diversifier: *output.to.diversifier(),
             note: output.note,
             witnesses: vec![witness],
             nullifier: nf,
@@ -156,7 +156,7 @@ impl SaplingNoteData {
         // to recreate the note
         let (value, r) = read_note(&mut reader)?; // TODO: This method is in a different package, because of some fields that are private
 
-        let maybe_note = extfvk.fvk.vk.into_payment_address(diversifier, &JUBJUB).unwrap().create_note(value, r, &JUBJUB);
+        let maybe_note = extfvk.fvk.vk.to_payment_address(diversifier, &JUBJUB).unwrap().create_note(value, r, &JUBJUB);
 
         let note = match maybe_note {
             Some(n)  => Ok(n),

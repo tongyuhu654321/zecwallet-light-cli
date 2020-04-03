@@ -124,8 +124,8 @@ impl FakeCompactBlock {
         // Create a fake Note for the account
         let mut rng = OsRng;
         let note = Note {
-            g_d: to.diversifier.g_d::<Bls12>(&JUBJUB).unwrap(),
-            pk_d: to.pk_d.clone(),
+            g_d: to.diversifier().g_d::<Bls12>(&JUBJUB).unwrap(),
+            pk_d: to.pk_d().clone(),
             value: value.into(),
             r: Fs::random(&mut rng),
         };
@@ -179,8 +179,8 @@ impl FakeCompactBlock {
         // Create a fake Note for the payment
         ctx.outputs.push({
             let note = Note {
-                g_d: to.diversifier.g_d::<Bls12>(&JUBJUB).unwrap(),
-                pk_d: to.pk_d.clone(),
+                g_d: to.diversifier().g_d::<Bls12>(&JUBJUB).unwrap(),
+                pk_d: to.pk_d().clone(),
                 value: value.into(),
                 r: Fs::random(&mut rng),
             };
@@ -208,8 +208,8 @@ impl FakeCompactBlock {
         ctx.outputs.push({
             let change_addr = extfvk.default_address().unwrap().1;
             let note = Note {
-                g_d: change_addr.diversifier.g_d::<Bls12>(&JUBJUB).unwrap(),
-                pk_d: change_addr.pk_d.clone(),
+                g_d: change_addr.diversifier().g_d::<Bls12>(&JUBJUB).unwrap(),
+                pk_d: change_addr.pk_d().clone(),
                 value: (in_value - value).into(),
                 r: Fs::random(&mut rng),
             };
