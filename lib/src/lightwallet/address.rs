@@ -2,8 +2,42 @@
 
 use pairing::bls12_381::Bls12;
 use zcash_primitives::primitives::PaymentAddress;
-use zcash_client_backend::encoding::{decode_payment_address, decode_transparent_address};
+use zcash_client_backend::encoding::{decode_payment_address};
 use zcash_primitives::legacy::TransparentAddress;
+use base58::{FromBase58, FromBase58Error};
+
+pub fn decode_transparent_address(
+    pubkey_version: &[u8],
+    script_version: &[u8],
+    s: &str,
+) -> Result<Option<TransparentAddress>, FromBase58Error> {
+    //let decoded = bs58::decode(s).into_vec()?;
+    let decoded_with_check = s.from_base58()?;
+    // Remove the last 4 bytes, which is the checksum
+    let decoded = decoded_with_check[..decoded_with_check.len()-4].to_vec();
+    
+    if &decoded[..pubkey_version.len()] == pubkey_version {
+        println!("Decoded pubkey, len = {}", decoded.len());
+        if decoded.len() == pubkey_version.len() + 20 {
+            let mut data = [0; 20];
+            data.copy_from_slice(&decoded[pubkey_version.len()..]);
+            Ok(Some(TransparentAddress::PublicKey(data)))
+        } else {
+            Ok(None)
+        }
+    } else if &decoded[..script_version.len()] == script_version {
+        println!("Decoded script, len = {}", decoded.len());
+        if decoded.len() == script_version.len() + 20 {
+            let mut data = [0; 20];
+            data.copy_from_slice(&decoded[script_version.len()..]);
+            Ok(Some(TransparentAddress::Script(data)))
+        } else {
+            Ok(None)
+        }
+    } else {
+        Ok(None)
+    }
+}
 
 /// An address that funds can be sent to.
 pub enum RecipientAddress {

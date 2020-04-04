@@ -256,7 +256,8 @@ impl Utxo {
     }
 
     pub fn to_outpoint(&self) -> OutPoint {
-        OutPoint { hash: self.txid.0, n: self.output_index as u32 }
+        use std::convert::TryInto;
+        OutPoint::new(self.txid.0, self.output_index.try_into().unwrap())
     }
 
     pub fn read<R: Read>(mut reader: R) -> io::Result<Self> {

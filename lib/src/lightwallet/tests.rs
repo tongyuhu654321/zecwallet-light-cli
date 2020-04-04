@@ -240,7 +240,10 @@ impl FakeCompactBlock {
 }
 
 struct FakeTransaction {
-    tx: Transaction,
+    //tx: Transaction,
+    txid: TxId,
+    vouts: Vec<TxOut>,
+    vins: Vec<TxIn>,
 }
 
 impl FakeTransaction {
@@ -253,15 +256,19 @@ impl FakeTransaction {
 
     fn new_with_txid(txid: TxId) -> Self {
         FakeTransaction {
-            tx: Transaction {
-                txid,
-                data: TransactionData::new()
-            }
+            txid,
+            vouts: vec![],
+            vins: vec![],
         }
     }
 
-    fn get_tx(&self) -> &Transaction {
-        &self.tx
+    fn get_tx(&mut self) -> Transaction {
+        let mut data = TransactionData::new();
+        data.vin = self.vins.drain(..).collect();
+        data.vout = self.vouts.drain(..).collect();
+
+        let tx = data.freeze().unwrap();
+        tx
     }
 
     fn add_t_output(&mut self, pk: &PublicKey, value: u64) {
@@ -270,18 +277,15 @@ impl FakeTransaction {
 
         let taddr_bytes = hash160.result();
 
-        self.tx.data.vout.push(TxOut {
+        self.vouts.push(TxOut {
             value: Amount::from_u64(value).unwrap(),
             script_pubkey: TransparentAddress::PublicKey(taddr_bytes.try_into().unwrap()).script(),
         });
     }
 
     fn add_t_input(&mut self, txid: TxId, n: u32) {
-        self.tx.data.vin.push(TxIn {
-            prevout: OutPoint{
-                hash: txid.0,
-                n
-            },
+        self.vins.push(TxIn {
+            prevout: OutPoint::new(txid.0, n),
             script_sig: Script{0: vec![]},
             sequence: 0,
         });
