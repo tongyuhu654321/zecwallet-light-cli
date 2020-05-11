@@ -5,6 +5,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::io::{Error, ErrorKind};
 
+use threadpool::ThreadPool;
+use std::sync::mpsc::channel;
+
 use rand::{Rng, rngs::OsRng};
 use subtle::{ConditionallySelectable, ConstantTimeEq, CtOption};
 use log::{info, warn, error};
@@ -233,7 +236,7 @@ impl LightWallet {
             mempool_txs: Arc::new(RwLock::new(HashMap::new())),
             config:      config.clone(),
             birthday:    latest_block,
-            total_scan_duration: Arc::new(RwLock::new(vec![Duration::new(0, 0)]))
+            total_scan_duration: Arc::new(RwLock::new(vec![Duration::new(0, 0)])),
         })
     }
 
@@ -375,7 +378,7 @@ impl LightWallet {
             mempool_txs: Arc::new(RwLock::new(HashMap::new())),
             config:      config.clone(),
             birthday,
-            total_scan_duration: Arc::new(RwLock::new(vec![Duration::new(0, 0)]))
+            total_scan_duration: Arc::new(RwLock::new(vec![Duration::new(0, 0)])),
         })
     }
 
@@ -1265,10 +1268,38 @@ impl LightWallet {
         existing_witnesses: &mut [&mut IncrementalWitness<Node>],
         block_witnesses: &mut [&mut IncrementalWitness<Node>],
         new_witnesses: &mut [&mut IncrementalWitness<Node>],
+        pool: &ThreadPool
     ) -> Option<WalletShieldedOutput> {
         let cmu = output.cmu().ok()?;
         let epk = output.epk().ok()?;
         let ct = output.ciphertext;
+
+        let (tx, rx) = channel();
+        ivks.iter().enumerate().for_each(|(account, ivk)| {
+            // Clone all values for passing to the closure
+            let ivk = ivk.clone();
+            let epk = epk.clone();
+            let ct = ct.clone();
+            let tx = tx.clone();
+
+            pool.execute(move || {
+                let m = try_sapling_compact_note_decryption(&ivk, &epk, &cmu, &ct);
+                let r = match m {
+                    Some((note, to)) => {
+                        tx.send(Some((note, to, account)))
+                    },
+                    None => {
+                        tx.send(None)
+                    }
+                };
+                
+                match r {
+                    Ok(_) => {},
+                    Err(e) => println!("Send error {:?}", e)
+                }
+                drop(tx);
+            });
+        });
 
         // Increment tree and witnesses
         let node = Node::new(cmu.into_repr());
@@ -1283,45 +1314,72 @@ impl LightWallet {
         }
         tree.append(node).unwrap();
 
-        for (account, ivk) in ivks.iter().enumerate() {
-            use std::time::{Instant};
-
-            let start = Instant::now();
-            let m = try_sapling_compact_note_decryption(ivk, &epk, &cmu, &ct);
-            let end = Instant::now();
-            
-            {
-                let mut d = self.total_scan_duration.write().unwrap();
-                let nd = d.get(0).unwrap().checked_add(end.duration_since(start)).unwrap();
-                d.clear();
-                d.push(nd);
+        // Collect all the RXs and fine if there was a valid result somewhere
+        let wsos = rx.iter().take(ivks.len()).map(move |n| {
+            let epk = epk.clone();
+            match n {
+                None => None,
+                Some((note, to, account)) => {
+                    // A note is marked as "change" if the account that received it
+                    // also spent notes in the same transaction. This will catch,
+                    // for instance:
+                    // - Change created by spending fractions of notes.
+                    // - Notes created by consolidation transactions.
+                    // - Notes sent from one account to itself.
+                    let is_change = spent_from_accounts.contains(&account);
+                    
+                    Some(WalletShieldedOutput {
+                        index, cmu, epk, account, note, to, is_change,
+                        witness: IncrementalWitness::from_tree(tree),
+                    })
+                }
             }
-            
-            let (note, to) = match m {
-                Some(ret) => ret,
-                None => continue,
-            };
-
-            // A note is marked as "change" if the account that received it
-            // also spent notes in the same transaction. This will catch,
-            // for instance:
-            // - Change created by spending fractions of notes.
-            // - Notes created by consolidation transactions.
-            // - Notes sent from one account to itself.
-            let is_change = spent_from_accounts.contains(&account);
-
-            return Some(WalletShieldedOutput {
-                index,
-                cmu,
-                epk,
-                account,
-                note,
-                to,
-                is_change,
-                witness: IncrementalWitness::from_tree(tree),
-            });
+        }).collect::<Vec<_>>();
+        
+        match wsos.into_iter().find(|wso| wso.is_some()) {
+            Some(Some(wso)) => Some(wso),
+            _ => None
         }
-        None
+
+        // for (account, ivk) in ivks.iter().enumerate() {
+        //     use std::time::{Instant};
+
+        //     let start = Instant::now();
+        //     let m = try_sapling_compact_note_decryption(ivk, &epk, &cmu, &ct);
+        //     let end = Instant::now();
+            
+        //     {
+        //         let mut d = self.total_scan_duration.write().unwrap();
+        //         let nd = d.get(0).unwrap().checked_add(end.duration_since(start)).unwrap();
+        //         d.clear();
+        //         d.push(nd);
+        //     }
+            
+        //     let (note, to) = match m {
+        //         Some(ret) => ret,
+        //         None => continue,
+        //     };
+
+        //     // A note is marked as "change" if the account that received it
+        //     // also spent notes in the same transaction. This will catch,
+        //     // for instance:
+        //     // - Change created by spending fractions of notes.
+        //     // - Notes created by consolidation transactions.
+        //     // - Notes sent from one account to itself.
+        //     let is_change = spent_from_accounts.contains(&account);
+
+        //     return Some(WalletShieldedOutput {
+        //         index,
+        //         cmu,
+        //         epk,
+        //         account,
+        //         note,
+        //         to,
+        //         is_change,
+        //         witness: IncrementalWitness::from_tree(tree),
+        //     });
+        // }
+        // None
     }
 
     /// Scans a [`CompactBlock`] with a set of [`ExtendedFullViewingKey`]s.
@@ -1338,6 +1396,7 @@ impl LightWallet {
         nullifiers: &[(&[u8], usize)],
         tree: &mut CommitmentTree<Node>,
         existing_witnesses: &mut [&mut IncrementalWitness<Node>],
+        pool: &ThreadPool
     ) -> Vec<zcash_client_backend::wallet::WalletTx> {
         let mut wtxs: Vec<zcash_client_backend::wallet::WalletTx> = vec![];
         let ivks: Vec<_> = extfvks.iter().map(|extfvk| extfvk.fvk.vk.ivk()).collect();
@@ -1408,6 +1467,7 @@ impl LightWallet {
                         existing_witnesses,
                         &mut block_witnesses,
                         &mut new_witnesses,
+                        pool
                     ) {
                         shielded_outputs.push(output);
                     }
@@ -1432,7 +1492,7 @@ impl LightWallet {
     }
 
     // Scan a block. Will return an error with the block height that failed to scan
-    pub fn scan_block(&self, block_bytes: &[u8]) -> Result<Vec<TxId>, i32> {
+    pub fn scan_block(&self, block_bytes: &[u8], pool: &ThreadPool) -> Result<Vec<TxId>, i32> {
         let block: CompactBlock = match parse_from_bytes(block_bytes) {
             Ok(block) => block,
             Err(e) => {
@@ -1540,6 +1600,7 @@ impl LightWallet {
                     &nf_refs[..],
                     &mut block_data.tree,
                     &mut witness_refs[..],
+                    pool
                 )
             };
         }

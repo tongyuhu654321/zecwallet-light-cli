@@ -1023,6 +1023,9 @@ impl LightClient {
 
             let last_invalid_height = Arc::new(AtomicI32::new(0));
             let last_invalid_height_inner = last_invalid_height.clone();
+
+            let pool = threadpool::ThreadPool::new(8);
+
             fetch_blocks(&self.get_server_uri(), start_height, end_height, self.config.no_cert_verification,
                 move |encoded_block: &[u8], height: u64| {
                     // Process the block only if there were no previous errors
@@ -1041,7 +1044,7 @@ impl LightClient {
                         Err(_) => {}
                     }
 
-                    match local_light_wallet.read().unwrap().scan_block(encoded_block) {
+                    match local_light_wallet.read().unwrap().scan_block(encoded_block, &pool) {
                         Ok(block_txns) => {
                             // Add to global tx list
                             all_txs.write().unwrap().extend_from_slice(&block_txns.iter().map(|txid| (txid.clone(), height as i32)).collect::<Vec<_>>()[..]);
