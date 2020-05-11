@@ -82,12 +82,16 @@ pub fn get_info(uri: &http::Uri, no_cert: bool) -> Result<LightdInfo, String> {
 async fn get_block_range<F : 'static + std::marker::Send>(uri: &http::Uri, start_height: u64, end_height: u64, no_cert: bool, mut c: F) 
     -> Result<(), Box<dyn std::error::Error>> 
 where F : FnMut(&[u8], u64) {
+    use std::time::{Duration, Instant};
     let mut client = get_client(uri, no_cert).await?;
 
     let bs = BlockId{ height: start_height, hash: vec!()};
     let be = BlockId{ height: end_height,   hash: vec!()};
 
     let request = Request::new(BlockRange{ start: Some(bs), end: Some(be) });
+
+    let mut process_duration = Duration::new(0, 0);
+    let start_time = Instant::now();
 
     let mut response = client.get_block_range(request).await?.into_inner();
     //println!("{:?}", response);
@@ -96,8 +100,16 @@ where F : FnMut(&[u8], u64) {
         let mut encoded_buf = vec![];
 
         block.encode(&mut encoded_buf).unwrap();
+        let process_start_time = Instant::now();
         c(&encoded_buf, block.height);
+        let process_end_time = Instant::now();
+        process_duration = process_duration + process_end_time.duration_since(process_start_time);
+
     }
+    let end_time = Instant::now();
+
+    println!("Total time {:}", end_time.duration_since(start_time).as_millis());
+    println!("Total process time {:?}", process_duration.as_millis());
 
     Ok(())
 }

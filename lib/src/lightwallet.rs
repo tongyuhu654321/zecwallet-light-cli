@@ -1,4 +1,4 @@
-use std::time::SystemTime;
+use std::time::{SystemTime, Duration};
 use std::io::{self, Read, Write};
 use std::cmp;
 use std::collections::{HashMap, HashSet};
@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 use std::io::{Error, ErrorKind};
 
 use rand::{Rng, rngs::OsRng};
-
+use subtle::{ConditionallySelectable, ConstantTimeEq, CtOption};
 use log::{info, warn, error};
 
 use protobuf::parse_from_bytes;
@@ -21,22 +21,26 @@ use sha2::{Sha256, Digest};
 
 use sodiumoxide::crypto::secretbox;
 
+use ff::PrimeField;
 use zcash_client_backend::{
     encoding::{encode_payment_address, encode_extended_spending_key},
-    proto::compact_formats::CompactBlock, welding_rig::scan_block,
+    proto::compact_formats::{CompactBlock, CompactOutput},
+    wallet::{WalletShieldedOutput, WalletShieldedSpend}
 };
 
 use zcash_primitives::{
+    jubjub::fs::Fs,
     block::BlockHash,
-    merkle_tree::{CommitmentTree},
     serialize::{Vector},
     transaction::{
         builder::{Builder},
         components::{Amount, OutPoint, TxOut}, components::amount::DEFAULT_FEE,
         TxId, Transaction, 
     },
-     legacy::{Script, TransparentAddress},
-    note_encryption::{Memo, try_sapling_note_decryption, try_sapling_output_recovery},
+    sapling::Node,
+    merkle_tree::{CommitmentTree, IncrementalWitness},
+    legacy::{Script, TransparentAddress},
+    note_encryption::{Memo, try_sapling_note_decryption, try_sapling_output_recovery, try_sapling_compact_note_decryption},
     zip32::{ExtendedFullViewingKey, ExtendedSpendingKey, ChildIndex},
     JUBJUB,
     primitives::{PaymentAddress},
@@ -129,6 +133,8 @@ pub struct LightWallet {
 
     // Non-serialized fields
     config: LightClientConfig,
+
+    pub total_scan_duration: Arc<RwLock<Vec<Duration>>>,
 }
 
 impl LightWallet {
@@ -227,6 +233,7 @@ impl LightWallet {
             mempool_txs: Arc::new(RwLock::new(HashMap::new())),
             config:      config.clone(),
             birthday:    latest_block,
+            total_scan_duration: Arc::new(RwLock::new(vec![Duration::new(0, 0)]))
         })
     }
 
@@ -368,6 +375,7 @@ impl LightWallet {
             mempool_txs: Arc::new(RwLock::new(HashMap::new())),
             config:      config.clone(),
             birthday,
+            total_scan_duration: Arc::new(RwLock::new(vec![Duration::new(0, 0)]))
         })
     }
 
@@ -1241,6 +1249,188 @@ impl LightWallet {
         num_invalidated as u64
     }
 
+    /// Scans a [`CompactOutput`] with a set of [`ExtendedFullViewingKey`]s.
+    ///
+    /// Returns a [`WalletShieldedOutput`] and corresponding [`IncrementalWitness`] if this
+    /// output belongs to any of the given [`ExtendedFullViewingKey`]s.
+    ///
+    /// The given [`CommitmentTree`] and existing [`IncrementalWitness`]es are incremented
+    /// with this output's commitment.
+    fn scan_output_internal(
+        &self,
+        (index, output): (usize, CompactOutput),
+        ivks: &[Fs],
+        spent_from_accounts: &HashSet<usize>,
+        tree: &mut CommitmentTree<Node>,
+        existing_witnesses: &mut [&mut IncrementalWitness<Node>],
+        block_witnesses: &mut [&mut IncrementalWitness<Node>],
+        new_witnesses: &mut [&mut IncrementalWitness<Node>],
+    ) -> Option<WalletShieldedOutput> {
+        let cmu = output.cmu().ok()?;
+        let epk = output.epk().ok()?;
+        let ct = output.ciphertext;
+
+        // Increment tree and witnesses
+        let node = Node::new(cmu.into_repr());
+        for witness in existing_witnesses {
+            witness.append(node).unwrap();
+        }
+        for witness in block_witnesses {
+            witness.append(node).unwrap();
+        }
+        for witness in new_witnesses {
+            witness.append(node).unwrap();
+        }
+        tree.append(node).unwrap();
+
+        for (account, ivk) in ivks.iter().enumerate() {
+            use std::time::{Instant};
+
+            let start = Instant::now();
+            let m = try_sapling_compact_note_decryption(ivk, &epk, &cmu, &ct);
+            let end = Instant::now();
+            
+            {
+                let mut d = self.total_scan_duration.write().unwrap();
+                let nd = d.get(0).unwrap().checked_add(end.duration_since(start)).unwrap();
+                d.clear();
+                d.push(nd);
+            }
+            
+            let (note, to) = match m {
+                Some(ret) => ret,
+                None => continue,
+            };
+
+            // A note is marked as "change" if the account that received it
+            // also spent notes in the same transaction. This will catch,
+            // for instance:
+            // - Change created by spending fractions of notes.
+            // - Notes created by consolidation transactions.
+            // - Notes sent from one account to itself.
+            let is_change = spent_from_accounts.contains(&account);
+
+            return Some(WalletShieldedOutput {
+                index,
+                cmu,
+                epk,
+                account,
+                note,
+                to,
+                is_change,
+                witness: IncrementalWitness::from_tree(tree),
+            });
+        }
+        None
+    }
+
+    /// Scans a [`CompactBlock`] with a set of [`ExtendedFullViewingKey`]s.
+    ///
+    /// Returns a vector of [`WalletTx`]s belonging to any of the given
+    /// [`ExtendedFullViewingKey`]s, and the corresponding new [`IncrementalWitness`]es.
+    ///
+    /// The given [`CommitmentTree`] and existing [`IncrementalWitness`]es are
+    /// incremented appropriately.
+    pub fn scan_block_internal(
+        &self,
+        block: CompactBlock,
+        extfvks: &[ExtendedFullViewingKey],
+        nullifiers: &[(&[u8], usize)],
+        tree: &mut CommitmentTree<Node>,
+        existing_witnesses: &mut [&mut IncrementalWitness<Node>],
+    ) -> Vec<zcash_client_backend::wallet::WalletTx> {
+        let mut wtxs: Vec<zcash_client_backend::wallet::WalletTx> = vec![];
+        let ivks: Vec<_> = extfvks.iter().map(|extfvk| extfvk.fvk.vk.ivk()).collect();
+
+        for tx in block.vtx.into_iter() {
+            let num_spends = tx.spends.len();
+            let num_outputs = tx.outputs.len();
+
+            // Check for spent notes
+            // The only step that is not constant-time is the filter() at the end.
+            let shielded_spends: Vec<_> = tx
+                .spends
+                .into_iter()
+                .enumerate()
+                .map(|(index, spend)| {
+                    // Find the first tracked nullifier that matches this spend, and produce
+                    // a WalletShieldedSpend if there is a match, in constant time.
+                    nullifiers
+                        .iter()
+                        .map(|&(nf, account)| CtOption::new(account as u64, nf.ct_eq(&spend.nf[..])))
+                        .fold(CtOption::new(0, 0.into()), |first, next| {
+                            CtOption::conditional_select(&next, &first, first.is_some())
+                        })
+                        .map(|account| WalletShieldedSpend {
+                            index,
+                            nf: spend.nf,
+                            account: account as usize,
+                        })
+                })
+                .filter(|spend| spend.is_some().into())
+                .map(|spend| spend.unwrap())
+                .collect();
+
+            // Collect the set of accounts that were spent from in this transaction
+            let spent_from_accounts: HashSet<_> =
+                shielded_spends.iter().map(|spend| spend.account).collect();
+
+            // Check for incoming notes while incrementing tree and witnesses
+            let mut shielded_outputs: Vec<WalletShieldedOutput> = vec![];
+            {
+                // Grab mutable references to new witnesses from previous transactions
+                // in this block so that we can update them. Scoped so we don't hold
+                // mutable references to wtxs for too long.
+                let mut block_witnesses: Vec<_> = wtxs
+                    .iter_mut()
+                    .map(|tx| {
+                        tx.shielded_outputs
+                            .iter_mut()
+                            .map(|output| &mut output.witness)
+                    })
+                    .flatten()
+                    .collect();
+
+                for to_scan in tx.outputs.into_iter().enumerate() {
+                    // Grab mutable references to new witnesses from previous outputs
+                    // in this transaction so that we can update them. Scoped so we
+                    // don't hold mutable references to shielded_outputs for too long.
+                    let mut new_witnesses: Vec<_> = shielded_outputs
+                        .iter_mut()
+                        .map(|output| &mut output.witness)
+                        .collect();
+
+                    if let Some(output) = self.scan_output_internal(
+                        to_scan,
+                        &ivks,
+                        &spent_from_accounts,
+                        tree,
+                        existing_witnesses,
+                        &mut block_witnesses,
+                        &mut new_witnesses,
+                    ) {
+                        shielded_outputs.push(output);
+                    }
+                }
+            }
+
+            if !(shielded_spends.is_empty() && shielded_outputs.is_empty()) {
+                let mut txid = TxId([0u8; 32]);
+                txid.0.copy_from_slice(&tx.hash);
+                wtxs.push(zcash_client_backend::wallet::WalletTx {
+                    txid,
+                    index: tx.index as usize,
+                    num_spends,
+                    num_outputs,
+                    shielded_spends,
+                    shielded_outputs,
+                });
+            }
+        }
+
+        wtxs
+    }
+
     // Scan a block. Will return an error with the block height that failed to scan
     pub fn scan_block(&self, block_bytes: &[u8]) -> Result<Vec<TxId>, i32> {
         let block: CompactBlock = match parse_from_bytes(block_bytes) {
@@ -1344,7 +1534,7 @@ impl LightWallet {
 
                 let extfvks: Vec<_> = self.zkeys.read().unwrap().iter().map(|zk| zk.extfvk.clone()).collect();
 
-                scan_block(
+                self.scan_block_internal(
                     block.clone(),
                     &extfvks,
                     &nf_refs[..],
