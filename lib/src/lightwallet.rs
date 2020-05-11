@@ -1491,8 +1491,12 @@ impl LightWallet {
         wtxs
     }
 
+    pub fn scan_block(&self, block_bytes: &[u8]) -> Result<Vec<TxId>, i32> {
+        self.scan_block_with_pool(&block_bytes, &ThreadPool::new(1))
+    }
+
     // Scan a block. Will return an error with the block height that failed to scan
-    pub fn scan_block(&self, block_bytes: &[u8], pool: &ThreadPool) -> Result<Vec<TxId>, i32> {
+    pub fn scan_block_with_pool(&self, block_bytes: &[u8], pool: &ThreadPool) -> Result<Vec<TxId>, i32> {
         let block: CompactBlock = match parse_from_bytes(block_bytes) {
             Ok(block) => block,
             Err(e) => {
