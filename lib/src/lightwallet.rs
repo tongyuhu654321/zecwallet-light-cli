@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 use std::io::{Error, ErrorKind};
 
 use threadpool::ThreadPool;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{channel};
 
 use rand::{Rng, rngs::OsRng};
 use subtle::{ConditionallySelectable, ConstantTimeEq, CtOption};
@@ -1263,7 +1263,6 @@ impl LightWallet {
         &self,
         (index, output): (usize, CompactOutput),
         ivks: &[Fs],
-        spent_from_accounts: &HashSet<usize>,
         tree: &mut CommitmentTree<Node>,
         existing_witnesses: &mut [&mut IncrementalWitness<Node>],
         block_witnesses: &mut [&mut IncrementalWitness<Node>],
@@ -1315,71 +1314,33 @@ impl LightWallet {
         tree.append(node).unwrap();
 
         // Collect all the RXs and fine if there was a valid result somewhere
-        let wsos = rx.iter().take(ivks.len()).map(move |n| {
-            let epk = epk.clone();
-            match n {
-                None => None,
-                Some((note, to, account)) => {
-                    // A note is marked as "change" if the account that received it
-                    // also spent notes in the same transaction. This will catch,
-                    // for instance:
-                    // - Change created by spending fractions of notes.
-                    // - Notes created by consolidation transactions.
-                    // - Notes sent from one account to itself.
-                    let is_change = spent_from_accounts.contains(&account);
-                    
-                    Some(WalletShieldedOutput {
-                        index, cmu, epk, account, note, to, is_change,
-                        witness: IncrementalWitness::from_tree(tree),
-                    })
+        let wsos = rx.iter().take(ivks.len())
+            .map(move |n| {
+                let epk = epk.clone();
+                match n {
+                    None => None,
+                    Some((note, to, account)) => {
+                        // A note is marked as "change" if the account that received it
+                        // also spent notes in the same transaction. This will catch,
+                        // for instance:
+                        // - Change created by spending fractions of notes.
+                        // - Notes created by consolidation transactions.
+                        // - Notes sent from one account to itself.
+                        //let is_change = spent_from_accounts.contains(&account);
+                        
+                        Some(WalletShieldedOutput {
+                            index, cmu, epk, account, note, to, is_change: false,
+                            witness: IncrementalWitness::from_tree(tree),
+                        })
+                    }
                 }
-            }
-        }).collect::<Vec<_>>();
+            })
+            .collect::<Vec<_>>();
         
         match wsos.into_iter().find(|wso| wso.is_some()) {
             Some(Some(wso)) => Some(wso),
             _ => None
         }
-
-        // for (account, ivk) in ivks.iter().enumerate() {
-        //     use std::time::{Instant};
-
-        //     let start = Instant::now();
-        //     let m = try_sapling_compact_note_decryption(ivk, &epk, &cmu, &ct);
-        //     let end = Instant::now();
-            
-        //     {
-        //         let mut d = self.total_scan_duration.write().unwrap();
-        //         let nd = d.get(0).unwrap().checked_add(end.duration_since(start)).unwrap();
-        //         d.clear();
-        //         d.push(nd);
-        //     }
-            
-        //     let (note, to) = match m {
-        //         Some(ret) => ret,
-        //         None => continue,
-        //     };
-
-        //     // A note is marked as "change" if the account that received it
-        //     // also spent notes in the same transaction. This will catch,
-        //     // for instance:
-        //     // - Change created by spending fractions of notes.
-        //     // - Notes created by consolidation transactions.
-        //     // - Notes sent from one account to itself.
-        //     let is_change = spent_from_accounts.contains(&account);
-
-        //     return Some(WalletShieldedOutput {
-        //         index,
-        //         cmu,
-        //         epk,
-        //         account,
-        //         note,
-        //         to,
-        //         is_change,
-        //         witness: IncrementalWitness::from_tree(tree),
-        //     });
-        // }
-        // None
     }
 
     /// Scans a [`CompactBlock`] with a set of [`ExtendedFullViewingKey`]s.
@@ -1393,46 +1354,58 @@ impl LightWallet {
         &self,
         block: CompactBlock,
         extfvks: &[ExtendedFullViewingKey],
-        nullifiers: &[(&[u8], usize)],
+        nullifiers: Vec<(Vec<u8>, usize)>,
         tree: &mut CommitmentTree<Node>,
         existing_witnesses: &mut [&mut IncrementalWitness<Node>],
         pool: &ThreadPool
     ) -> Vec<zcash_client_backend::wallet::WalletTx> {
         let mut wtxs: Vec<zcash_client_backend::wallet::WalletTx> = vec![];
-        let ivks: Vec<_> = extfvks.iter().map(|extfvk| extfvk.fvk.vk.ivk()).collect();
+        let ivks = extfvks.iter().map(|extfvk| extfvk.fvk.vk.ivk()).collect::<Vec<_>>();
 
         for tx in block.vtx.into_iter() {
             let num_spends = tx.spends.len();
             let num_outputs = tx.outputs.len();
 
-            // Check for spent notes
-            // The only step that is not constant-time is the filter() at the end.
-            let shielded_spends: Vec<_> = tx
-                .spends
-                .into_iter()
-                .enumerate()
-                .map(|(index, spend)| {
-                    // Find the first tracked nullifier that matches this spend, and produce
-                    // a WalletShieldedSpend if there is a match, in constant time.
-                    nullifiers
-                        .iter()
-                        .map(|&(nf, account)| CtOption::new(account as u64, nf.ct_eq(&spend.nf[..])))
-                        .fold(CtOption::new(0, 0.into()), |first, next| {
-                            CtOption::conditional_select(&next, &first, first.is_some())
+            let (ctx, crx) = channel();
+            {
+                let nullifiers = nullifiers.clone();
+                let tx = tx.clone();
+                pool.execute(move || {
+                    // Check for spent notes
+                    // The only step that is not constant-time is the filter() at the end.
+                    let shielded_spends: Vec<_> = tx
+                        .spends
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, spend)| {
+                            // Find the first tracked nullifier that matches this spend, and produce
+                            // a WalletShieldedSpend if there is a match, in constant time.
+                            nullifiers
+                                .iter()
+                                .map(|(nf, account)| CtOption::new(*account as u64, nf.ct_eq(&spend.nf[..])))
+                                .fold(CtOption::new(0, 0.into()), |first, next| {
+                                    CtOption::conditional_select(&next, &first, first.is_some())
+                                })
+                                .map(|account| WalletShieldedSpend {
+                                    index,
+                                    nf: spend.nf,
+                                    account: account as usize,
+                                })
                         })
-                        .map(|account| WalletShieldedSpend {
-                            index,
-                            nf: spend.nf,
-                            account: account as usize,
-                        })
-                })
-                .filter(|spend| spend.is_some().into())
-                .map(|spend| spend.unwrap())
-                .collect();
+                        .filter(|spend| spend.is_some().into())
+                        .map(|spend| spend.unwrap())
+                        .collect();
 
-            // Collect the set of accounts that were spent from in this transaction
-            let spent_from_accounts: HashSet<_> =
-                shielded_spends.iter().map(|spend| spend.account).collect();
+                    // Collect the set of accounts that were spent from in this transaction
+                    let spent_from_accounts: HashSet<_> =
+                        shielded_spends.iter().map(|spend| spend.account).collect();
+
+                    ctx.send((shielded_spends, spent_from_accounts)).unwrap();
+
+                    drop(ctx);
+                });
+            }
+            
 
             // Check for incoming notes while incrementing tree and witnesses
             let mut shielded_outputs: Vec<WalletShieldedOutput> = vec![];
@@ -1462,7 +1435,6 @@ impl LightWallet {
                     if let Some(output) = self.scan_output_internal(
                         to_scan,
                         &ivks,
-                        &spent_from_accounts,
                         tree,
                         existing_witnesses,
                         &mut block_witnesses,
@@ -1474,6 +1446,16 @@ impl LightWallet {
                 }
             }
 
+            let (shielded_spends, spent_from_accounts) = crx.recv().unwrap();
+
+            // Identify change outputs
+            shielded_outputs.iter_mut().for_each(|output| {
+                if spent_from_accounts.contains(&output.account) {
+                    output.is_change = true;
+                }
+            });
+
+            // Update wallet tx
             if !(shielded_spends.is_empty() && shielded_outputs.is_empty()) {
                 let mut txid = TxId([0u8; 32]);
                 txid.0.copy_from_slice(&tx.hash);
@@ -1587,7 +1569,7 @@ impl LightWallet {
             }
 
             new_txs = {
-                let nf_refs: Vec<_> = nfs.iter().enumerate().map(|(account, (nf, _))| (&nf[..], account)).collect();
+                let nf_refs = nfs.iter().enumerate().map(|(account, (nf, _))| (nf.to_vec(), account)).collect::<Vec<_>>();
 
                 // Create a single mutable slice of all the newly-added witnesses.
                 let mut witness_refs: Vec<_> = txs
@@ -1601,7 +1583,7 @@ impl LightWallet {
                 self.scan_block_internal(
                     block.clone(),
                     &extfvks,
-                    &nf_refs[..],
+                    nf_refs,
                     &mut block_data.tree,
                     &mut witness_refs[..],
                     pool
