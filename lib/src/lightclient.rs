@@ -1107,8 +1107,8 @@ impl LightClient {
                 for address in addresses {
                     let wallet = self.wallet.clone();
                     let block_times_inner = block_times.clone();
-                    let pool = pool.clone();
 
+                    let pool = pool.clone();
                     let server_uri = self.get_server_uri();
                     let no_cert = self.config.no_cert_verification;
 
@@ -1169,12 +1169,19 @@ impl LightClient {
         // read the memos
         for (txid, height) in txids_to_fetch {
             let light_wallet_clone = self.wallet.clone();
-            info!("Fetching full Tx: {}", txid);
 
-            fetch_full_tx(&self.get_server_uri(), txid, self.config.no_cert_verification, move |tx_bytes: &[u8] | {
-                let tx = Transaction::read(tx_bytes).unwrap();
+            let pool = pool.clone();
+            let server_uri = self.get_server_uri();
+            let no_cert = self.config.no_cert_verification;
 
-                light_wallet_clone.read().unwrap().scan_full_tx(&tx, height, 0);
+            pool.execute(move || {
+                info!("Fetching full Tx: {}", txid);
+
+                fetch_full_tx(&server_uri, txid, no_cert, move |tx_bytes: &[u8]| {
+                    let tx = Transaction::read(tx_bytes).unwrap();
+    
+                    light_wallet_clone.read().unwrap().scan_full_tx(&tx, height, 0);
+                });
             });
         };
 
