@@ -180,26 +180,26 @@ async fn get_transaction(uri: &http::Uri, txid: TxId, no_cert: bool)
     Ok(response.into_inner())
 }
 
-pub fn fetch_full_tx<F : 'static + std::marker::Send>(uri: &http::Uri, txid: TxId, no_cert: bool, c: F)
-        where F : Fn(&[u8]) {
+pub fn fetch_full_tx(uri: &http::Uri, txid: TxId, no_cert: bool) -> Result<Vec<u8>, String> {
     let mut rt = match tokio::runtime::Runtime::new() {
         Ok(r) => r,
         Err(e) => {
-            error!("Error creating runtime {}", e.to_string());
-            eprintln!("{}", e);
-            return;
+            let errstr = format!("Error creating runtime {}", e.to_string());
+            error!("{}", errstr);
+            eprintln!("{}", errstr);
+            return Err(errstr);
         }
     };
 
     match rt.block_on(get_transaction(uri, txid, no_cert)) {
-        Ok(rawtx) => c(&rawtx.data),
+        Ok(rawtx) => Ok(rawtx.data.to_vec()),
         Err(e) => {
-            error!("Error in get_transaction runtime {}", e.to_string());
-            eprintln!("{}", e);
+            let errstr = format!("Error in get_transaction runtime {}", e.to_string());
+            error!("{}", errstr);
+            eprintln!("{}", errstr);
+            Err(errstr)
         }
-    }
-
-    
+    }    
 }
 
 // send_transaction GRPC call
@@ -240,22 +240,19 @@ async fn get_latest_block(uri: &http::Uri, no_cert: bool) -> Result<BlockId, Box
     Ok(response.into_inner())
 }
 
-pub fn fetch_latest_block<F : 'static + std::marker::Send>(uri: &http::Uri, no_cert: bool, mut c : F) 
-    where F : FnMut(BlockId) {
+pub fn fetch_latest_block(uri: &http::Uri, no_cert: bool) -> Result<BlockId, String> {
     let mut rt = match tokio::runtime::Runtime::new() {
         Ok(r) => r,
         Err(e) => {
-            error!("Error creating runtime {}", e.to_string());
-            eprintln!("{}", e);
-            return;
+            let errstr = format!("Error creating runtime {}", e.to_string());
+            eprintln!("{}", errstr);
+            return Err(errstr);
         }
     };
 
-    match rt.block_on(get_latest_block(uri, no_cert)) {
-        Ok(b) => c(b),
-        Err(e) => {
-            error!("Error getting latest block {}", e.to_string());
-            eprintln!("{}", e);
-        }
-    };
+    rt.block_on(get_latest_block(uri, no_cert)).map_err(|e| {
+        let errstr = format!("Error getting latest block {}", e.to_string());
+        eprintln!("{}", errstr);
+        errstr
+    })
 }

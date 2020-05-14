@@ -2,8 +2,8 @@ use crate::lightwallet::LightWallet;
 
 use rand::{rngs::OsRng, seq::SliceRandom};
 
-use std::sync::{Arc, RwLock, Mutex};
-use std::sync::atomic::{AtomicU64, AtomicI32, AtomicUsize, Ordering};
+use std::sync::{Arc, RwLock, Mutex, mpsc::channel};
+use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use std::path::{Path, PathBuf};
 use std::fs::File;
 use std::collections::HashMap;
@@ -28,7 +28,6 @@ use log4rs::append::rolling_file::policy::compound::{
     roll::fixed_window::FixedWindowRoller,
 };
 
-use crate::grpc_client::{BlockId};
 use crate::grpcconnector::{self, *};
 use crate::SaplingParams;
 use crate::ANCHOR_OFFSET;
@@ -947,13 +946,7 @@ impl LightClient {
         let mut last_scanned_height = self.wallet.read().unwrap().last_scanned_height() as u64;
 
         // This will hold the latest block fetched from the RPC
-        let latest_block_height = Arc::new(AtomicU64::new(0));
-        let lbh = latest_block_height.clone();
-        fetch_latest_block(&self.get_server_uri(), self.config.no_cert_verification, 
-            move |block: BlockId| {
-                lbh.store(block.height, Ordering::SeqCst);
-            });
-        let latest_block = latest_block_height.load(Ordering::SeqCst);
+        let latest_block = fetch_latest_block(&self.get_server_uri(), self.config.no_cert_verification)?.height;
        
 
         if latest_block < last_scanned_height {
@@ -1165,6 +1158,9 @@ impl LightClient {
         let mut rng = OsRng;        
         txids_to_fetch.shuffle(&mut rng);
 
+        let num_fetches = txids_to_fetch.len();
+        let (ctx, crx) = channel();
+
         // And go and fetch the txids, getting the full transaction, so we can 
         // read the memos
         for (txid, height) in txids_to_fetch {
@@ -1173,23 +1169,33 @@ impl LightClient {
             let pool = pool.clone();
             let server_uri = self.get_server_uri();
             let no_cert = self.config.no_cert_verification;
-
+            let ctx = ctx.clone();
+            
             pool.execute(move || {
                 info!("Fetching full Tx: {}", txid);
 
-                fetch_full_tx(&server_uri, txid, no_cert, move |tx_bytes: &[u8]| {
-                    let tx = Transaction::read(tx_bytes).unwrap();
+                match fetch_full_tx(&server_uri, txid, no_cert) {
+                    Ok(tx_bytes) => {
+                        let tx = Transaction::read(&tx_bytes[..]).unwrap();
     
-                    light_wallet_clone.read().unwrap().scan_full_tx(&tx, height, 0);
-                });
+                        light_wallet_clone.read().unwrap().scan_full_tx(&tx, height, 0);
+                        ctx.send(Ok(())).unwrap();
+                    },
+                    Err(e) => ctx.send(Err(e)).unwrap()
+                };                
             });
         };
 
-        Ok(object!{
-            "result" => "success",
-            "latest_block" => latest_block,
-            "downloaded_bytes" => bytes_downloaded.load(Ordering::SeqCst)
-        })
+        // Wait for all the fetches to finish.
+        let result = crx.iter().take(num_fetches).collect::<Result<Vec<()>, String>>();
+        match result {
+            Ok(_) => Ok(object!{
+                "result" => "success",
+                "latest_block" => latest_block,
+                "downloaded_bytes" => bytes_downloaded.load(Ordering::SeqCst)
+            }),
+            Err(e) => Err(format!("Error fetching all txns for memos: {}", e))
+        }        
     }
 
     pub fn do_send(&self, addrs: Vec<(&str, u64, Option<String>)>) -> Result<String, String> {
