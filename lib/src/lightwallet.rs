@@ -1590,7 +1590,6 @@ impl LightWallet {
                 )
             };
         }
-
         
         // If this block had any new Txs, return the list of ALL txids in this block, 
         // so the wallet can fetch them all as a decoy.

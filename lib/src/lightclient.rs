@@ -1026,7 +1026,7 @@ impl LightClient {
             let last_invalid_height = Arc::new(AtomicI32::new(0));
             let last_invalid_height_inner = last_invalid_height.clone();
 
-            let pool = pool.clone();
+            let tpool = pool.clone();
             fetch_blocks(&self.get_server_uri(), start_height, end_height, self.config.no_cert_verification,
                 move |encoded_block: &[u8], height: u64| {
                     // Process the block only if there were no previous errors
@@ -1045,7 +1045,7 @@ impl LightClient {
                         Err(_) => {}
                     }
 
-                    match local_light_wallet.read().unwrap().scan_block_with_pool(encoded_block, &pool) {
+                    match local_light_wallet.read().unwrap().scan_block_with_pool(encoded_block, &tpool) {
                         Ok(block_txns) => {
                             // Add to global tx list
                             all_txs.write().unwrap().extend_from_slice(&block_txns.iter().map(|txid| (txid.clone(), height as i32)).collect::<Vec<_>>()[..]);
@@ -1103,19 +1103,25 @@ impl LightClient {
                 let addresses = self.wallet.read().unwrap()
                                     .taddresses.read().unwrap().iter().map(|a| a.clone())
                                     .collect::<Vec<String>>();
+                
                 for address in addresses {
                     let wallet = self.wallet.clone();
                     let block_times_inner = block_times.clone();
+                    let pool = pool.clone();
 
-                    fetch_transparent_txids(&self.get_server_uri(), address, start_height, end_height, self.config.no_cert_verification,
-                        move |tx_bytes: &[u8], height: u64| {
-                            let tx = Transaction::read(tx_bytes).unwrap();
+                    let server_uri = self.get_server_uri();
+                    let no_cert = self.config.no_cert_verification;
 
-                            // Scan this Tx for transparent inputs and outputs
-                            let datetime = block_times_inner.read().unwrap().get(&height).map(|v| *v).unwrap_or(0);
-                            wallet.read().unwrap().scan_full_tx(&tx, height as i32, datetime as u64); 
-                        }
-                    );
+                    pool.execute(move || {
+                        fetch_transparent_txids(&server_uri, address, start_height, end_height, no_cert,
+                            move |tx_bytes: &[u8], height: u64| {
+                                let tx = Transaction::read(tx_bytes).unwrap();
+
+                                // Scan this Tx for transparent inputs and outputs
+                                let datetime = block_times_inner.read().unwrap().get(&height).map(|v| *v).unwrap_or(0);
+                                wallet.read().unwrap().scan_full_tx(&tx, height as i32, datetime as u64); 
+                        });
+                    });
                 }
             }           
             
