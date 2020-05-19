@@ -79,9 +79,9 @@ pub fn get_info(uri: &http::Uri, no_cert: bool) -> Result<LightdInfo, String> {
 }
 
 
-async fn get_block_range<F : 'static + std::marker::Send>(uri: &http::Uri, start_height: u64, end_height: u64, no_cert: bool, mut c: F) 
+async fn get_block_range<F : 'static + std::marker::Send>(uri: &http::Uri, start_height: u64, end_height: u64, no_cert: bool, c: F) 
     -> Result<(), Box<dyn std::error::Error>> 
-where F : FnMut(&[u8], u64) {
+where F : Fn(&[u8], u64) {
     let mut client = get_client(uri, no_cert).await?;
 
     let bs = BlockId{ height: start_height, hash: vec!()};
@@ -90,7 +90,6 @@ where F : FnMut(&[u8], u64) {
     let request = Request::new(BlockRange{ start: Some(bs), end: Some(be) });
 
     let mut response = client.get_block_range(request).await?.into_inner();
-    //println!("{:?}", response);
     while let Some(block) = response.message().await? {
         use prost::Message;
         let mut encoded_buf = vec![];
@@ -102,19 +101,28 @@ where F : FnMut(&[u8], u64) {
     Ok(())
 }
 
-pub fn fetch_blocks<F : 'static + std::marker::Send>(uri: &http::Uri, start_height: u64, end_height: u64, no_cert: bool, c: F)
-    where F : FnMut(&[u8], u64) {
+pub fn fetch_blocks<F : 'static + std::marker::Send>(uri: &http::Uri, start_height: u64, end_height: u64, no_cert: bool, c: F) -> Result<(), String>
+    where F : Fn(&[u8], u64)  {
     
     let mut rt = match tokio::runtime::Runtime::new() {
         Ok(r) => r,
         Err(e) => {
-            error!("Error fetching blocks {}", e.to_string());
+            let es = format!("Error creating runtime {:?}", e);
+            error!("{}", es);
             eprintln!("{}", e);
-            return;
+            return Err(es);
         }
     };
 
-    rt.block_on(get_block_range(uri, start_height, end_height, no_cert, c)).unwrap();
+    match rt.block_on(get_block_range(uri, start_height, end_height, no_cert, c)) {
+        Ok(o) => Ok(o),
+        Err(e) => {
+            let e = format!("Error fetching blocks {:?}", e);
+            error!("{}", e);
+            eprintln!("{}", e);
+            Err(e)
+        }
+    }
 }
 
 
@@ -140,20 +148,29 @@ async fn get_address_txids<F : 'static + std::marker::Send>(uri: &http::Uri, add
 }
 
 
-pub fn fetch_transparent_txids<F : 'static + std::marker::Send>(uri: &http::Uri, address: String, 
-        start_height: u64, end_height: u64, no_cert: bool, c: F)
+pub fn fetch_transparent_txids<F: 'static + std::marker::Send>(uri: &http::Uri, address: String, 
+        start_height: u64, end_height: u64, no_cert: bool, c: F) -> Result<(), String>
     where F : Fn(&[u8], u64) {
     
     let mut rt = match tokio::runtime::Runtime::new() {
         Ok(r) => r,
         Err(e) => {
-            error!("Error creating runtime {}", e.to_string());
+            let e = format!("Error creating runtime {:?}", e);
+            error!("{}", e);
             eprintln!("{}", e);
-            return;
+            return Err(e);
         }
     };
 
-    rt.block_on(get_address_txids(uri, address, start_height, end_height, no_cert, c)).unwrap();
+    match rt.block_on(get_address_txids(uri, address.clone(), start_height, end_height, no_cert, c)) {
+        Ok(o) => Ok(o),
+        Err(e) => {
+            let e = format!("Error with get_address_txids runtime {:?}", e);
+            error!("{}", e);
+            eprintln!("{}", e);
+            Err(e)
+        }
+    }
 }
 
 
