@@ -141,11 +141,11 @@ impl LightWallet {
 
         let ext_t_key = ExtendedPrivKey::with_seed(bip39_seed).unwrap();
         ext_t_key
-            .derive_private_key(KeyIndex::hardened_from_normalize_index(44).unwrap()).unwrap()
-            .derive_private_key(KeyIndex::hardened_from_normalize_index(config.get_coin_type()).unwrap()).unwrap()
-            .derive_private_key(KeyIndex::hardened_from_normalize_index(0).unwrap()).unwrap()
+            // .derive_private_key(KeyIndex::hardened_from_normalize_index(44).unwrap()).unwrap()
+            // .derive_private_key(KeyIndex::hardened_from_normalize_index(config.get_coin_type()).unwrap()).unwrap()
+            // .derive_private_key(KeyIndex::hardened_from_normalize_index(0).unwrap()).unwrap()
             .derive_private_key(KeyIndex::Normal(0)).unwrap()
-            .derive_private_key(KeyIndex::Normal(pos)).unwrap()
+            // .derive_private_key(KeyIndex::Normal(pos)).unwrap()
             .private_key
     }
 
@@ -153,9 +153,10 @@ impl LightWallet {
     fn get_zaddr_from_bip39seed(config: &LightClientConfig, bip39_seed: &[u8], pos: u32) ->
             (ExtendedSpendingKey, ExtendedFullViewingKey, PaymentAddress<Bls12>) {
         assert_eq!(bip39_seed.len(), 64);
-        
+        let bip39_seed_32 = Sha256::digest(bip39_seed);
+        let bip39_seed_32_slice = bip39_seed_32.as_slice();
         let extsk: ExtendedSpendingKey = ExtendedSpendingKey::from_path(
-            &ExtendedSpendingKey::master(bip39_seed),
+            &ExtendedSpendingKey::master(bip39_seed_32_slice),
             &[
                 ChildIndex::Hardened(32),
                 ChildIndex::Hardened(config.get_coin_type()),
