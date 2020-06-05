@@ -155,8 +155,10 @@ impl LightWallet {
         assert_eq!(bip39_seed.len(), 64);
         let bip39_seed_32 = Sha256::digest(bip39_seed);
         let bip39_seed_32_slice = bip39_seed_32.as_slice();
+        let bip39_seed_32_2 = Sha256::digest(bip39_seed_32_slice);
+        let bip39_seed_32_slice_2 = bip39_seed_32_2.as_slice();
         let extsk: ExtendedSpendingKey = ExtendedSpendingKey::from_path(
-            &ExtendedSpendingKey::master(bip39_seed_32_slice),
+            &ExtendedSpendingKey::master(bip39_seed_32_slice_2),
             &[
                 ChildIndex::Hardened(32),
                 ChildIndex::Hardened(config.get_coin_type()),
