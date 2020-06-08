@@ -38,40 +38,41 @@ webpki = "0.21.0"
 webpki-roots = "0.18.0"
 
 [dependencies.bellman]
-# git = "https://github.com/tongyuhu654321/librustzcash.git"
-# rev = "26924fcbb374fcc4a8e369e92bcbf699ba50cf1d"
-path = "../../librustzcash/bellman"
+git = "https://github.com/tongyuhu654321/librustzcash.git"
+rev ="e2dcc50b21da81ba18a6cd9375e832cf612e4f15"
+# path = "../../librustzcash/bellman"
 default-features = false
 features = ["groth16"]
 
 [dependencies.pairing]
-# git = "https://github.com/tongyuhu654321/librustzcash.git"
-# rev = "26924fcbb374fcc4a8e369e92bcbf699ba50cf1d"
-path = "../../librustzcash/pairing"
+git = "https://github.com/tongyuhu654321/librustzcash.git"
+rev ="e2dcc50b21da81ba18a6cd9375e832cf612e4f15"
+# path = "../../librustzcash/pairing"
 
 [dependencies.zcash_client_backend]
-# git = "https://github.com/tongyuhu654321/librustzcash.git"
-# rev = "26924fcbb374fcc4a8e369e92bcbf699ba50cf1d"
-path = "../../librustzcash/zcash_client_backend"
+git = "https://github.com/tongyuhu654321/librustzcash.git"
+rev ="e2dcc50b21da81ba18a6cd9375e832cf612e4f15"
+
+# path = "../../librustzcash/zcash_client_backend"
 default-features = false
 
 [dependencies.zcash_primitives]
-# git = "https://github.com/tongyuhu654321/librustzcash.git"
-# rev = "26924fcbb374fcc4a8e369e92bcbf699ba50cf1d"
-path = "../../librustzcash/zcash_primitives"
+git = "https://github.com/tongyuhu654321/librustzcash.git"
+rev ="e2dcc50b21da81ba18a6cd9375e832cf612e4f15"
+# path = "../../librustzcash/zcash_primitives"
 default-features = false
 features = ["transparent-inputs"]
 
 [dependencies.zcash_proofs]
-# git = "https://github.com/tongyuhu654321/librustzcash.git"
-# rev = "26924fcbb374fcc4a8e369e92bcbf699ba50cf1d"
-path = "../../librustzcash/zcash_proofs"
+git = "https://github.com/tongyuhu654321/librustzcash.git"
+rev ="e2dcc50b21da81ba18a6cd9375e832cf612e4f15"
+# path = "../../librustzcash/zcash_proofs"
 default-features = false
 
 [dependencies.ff]
-# git = "https://github.com/tongyuhu654321/librustzcash.git"
-# rev = "26924fcbb374fcc4a8e369e92bcbf699ba50cf1d"
-path = "../../librustzcash/ff"
+git = "https://github.com/tongyuhu654321/librustzcash.git"
+rev ="e2dcc50b21da81ba18a6cd9375e832cf612e4f15"
+# path = "../../librustzcash/ff"
 features = ["ff_derive"]
 
 [build-dependencies]
